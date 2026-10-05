@@ -21,6 +21,18 @@
 转换后 **docx 页数与 pdf 一模一样**,每个文本框的位置、大小、字体、颜色均与
 原 PDF 一一对应。
 
+## 效果对比
+
+> 左:原始 PDF · 右:转换后 DOCX→PDF(文本框一比一复刻)
+
+**第 1 页对比**:
+
+![第1页对比](docs/images/comparison-page1.png)
+
+**第 3 页对比**:
+
+![第3页对比](docs/images/comparison-page3.png)
+
 ---
 
 ## 目录
