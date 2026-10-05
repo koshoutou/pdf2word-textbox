@@ -332,6 +332,12 @@ pdf2word-textbox/
 
 ## 更新日志
 
+### v1.1.0 (2025-10)
+
+- 🔗 **超链接保留**:提取 PDF 中的 URI 超链接,匹配到对应文本 span,在 docx 中生成可点击超链接关系
+- 📋 **元数据保留**:PDF 的 title / author / subject / keywords / producer 复制到 docx core properties
+- 内部跳转链接(#pageN)识别与标记
+
 ### v1.0.0 (2025-10)
 
 - ✨ 首个版本:基于 VML 文本框的 1:1 位置复刻

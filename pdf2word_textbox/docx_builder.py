@@ -142,7 +142,15 @@ def add_textbox(
                 .replace("&", "&amp;")
                 .replace("<", "&lt;")
                 .replace(">", "&gt;"))
-        runs_xml += f'<w:r>{rPr}<w:t xml:space="preserve">{text}</w:t></w:r>'
+        # 超链接:用 w:hyperlink 包裹 run
+        rel_id = run.get("hyperlink_rel_id")
+        if rel_id:
+            runs_xml += (f'<w:hyperlink r:id="{rel_id}" '
+                        f'xmlns:r="{R_NS}">'
+                        f'<w:r>{rPr}<w:t xml:space="preserve">{text}</w:t></w:r>'
+                        f'</w:hyperlink>')
+        else:
+            runs_xml += f'<w:r>{rPr}<w:t xml:space="preserve">{text}</w:t></w:r>'
 
     txbx_content = f'<w:txbxContent xmlns:w="{W_NS}"><w:p>{pPr}{runs_xml}</w:p></w:txbxContent>'
 

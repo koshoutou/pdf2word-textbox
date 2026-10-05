@@ -95,6 +95,10 @@ class Converter:
             # 构建 docx
             doc = Document()
             self._setup_default_doc(doc)
+            # 复制 PDF 元数据到 docx
+            self._copy_metadata(ext, doc)
+            # 超链接 URI → rel_id 缓存
+            self._hyperlink_cache: dict[str, str] = {}
             for i, pe in enumerate(pages):
                 region = regions[i]
                 log.info("(%d/%d) 生成第 %d 页", i + 1, len(pages), pe.page_index + 1)
@@ -103,6 +107,48 @@ class Converter:
             doc.save(docx_file)
             log.info("已保存: %s", docx_file)
             return docx_file
+
+    # ---------- 元数据 ----------
+    def _copy_metadata(self, ext: PDFExtractor, doc: Document):
+        """把 PDF 元数据(title/author/subject/keywords)复制到 docx core properties。"""
+        try:
+            meta = ext.doc.metadata or {}
+            cp = doc.core_properties
+            if meta.get("title"):
+                cp.title = meta["title"]
+            if meta.get("author"):
+                cp.author = meta["author"]
+            if meta.get("subject"):
+                cp.subject = meta["subject"]
+            if meta.get("keywords"):
+                cp.keywords = meta["keywords"]
+            if meta.get("producer"):
+                cp.comments = f"PDF producer: {meta['producer']}"
+            log.info("元数据已复制: title=%s author=%s",
+                     meta.get("title", "")[:30], meta.get("author", "")[:30])
+        except Exception as e:
+            log.warning("元数据复制失败: %s", e)
+
+    def _get_hyperlink_rel_id(self, doc: Document, uri: str) -> Optional[str]:
+        """为 URI 创建(或复用)docx 外部超链接关系,返回 rel_id。"""
+        if not uri:
+            return None
+        # 内部跳转(#pageN)暂不处理为可点击链接
+        if uri.startswith("#"):
+            return None
+        if uri in self._hyperlink_cache:
+            return self._hyperlink_cache[uri]
+        try:
+            rId = doc.part.relate_to(
+                uri,
+                "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+                is_external=True,
+            )
+            self._hyperlink_cache[uri] = rId
+            return rId
+        except Exception as e:
+            log.warning("超链接关系创建失败(%s): %s", uri[:50], e)
+            return None
 
     # ---------- docx 初始化 ----------
     def _setup_default_doc(self, doc: Document):
@@ -207,7 +253,7 @@ class Converter:
 
         # 3. 画正文文本框(置于上层)
         for idx, sp in body_spans:
-            self._add_text_span_as_textbox(p, sp, pe, z=10)
+            self._add_text_span_as_textbox(p, sp, pe, z=10, doc=doc)
 
     # ---------- 页眉页脚 ----------
     def _make_header_footer(self, doc: Document, section, pe: PageElements,
@@ -241,7 +287,7 @@ class Converter:
         for i, sp in enumerate(pe.spans):
             r = classify_span(sp, region, pe)
             if r == "header":
-                self._add_text_span_as_textbox(hp, sp, pe, z=10)
+                self._add_text_span_as_textbox(hp, sp, pe, z=10, doc=doc)
         for dv in region.header_dividers:
             docx_builder.add_line(
                 hp, dv.bbox[0], dv.bbox[1], dv.bbox[2], dv.bbox[3],
@@ -252,7 +298,7 @@ class Converter:
         for i, sp in enumerate(pe.spans):
             r = classify_span(sp, region, pe)
             if r == "footer":
-                self._add_text_span_as_textbox(fp, sp, pe, z=10)
+                self._add_text_span_as_textbox(fp, sp, pe, z=10, doc=doc)
         for dv in region.footer_dividers:
             docx_builder.add_line(
                 fp, dv.bbox[0], dv.bbox[1], dv.bbox[2], dv.bbox[3],
@@ -277,7 +323,8 @@ class Converter:
 
     # ---------- 元素放置 ----------
     def _add_text_span_as_textbox(self, paragraph, sp: TextSpan,
-                                  pe: PageElements, z: int = 10):
+                                  pe: PageElements, z: int = 10,
+                                  doc: Optional[Document] = None):
         """把一个文本 span 作为文本框放置(精确坐标)。"""
         x0, y0, x1, y1 = sp.bbox
         w = max(x1 - x0, 1.0)
@@ -288,6 +335,10 @@ class Converter:
         # 高度也略加 buffer,避免被裁剪
         h = max(h, sp.size * 1.2)
         font_latin, font_ea = get_font_roles(sp.font)
+        # 超链接 rel_id
+        hyperlink_rel_id = None
+        if sp.hyperlink and doc is not None:
+            hyperlink_rel_id = self._get_hyperlink_rel_id(doc, sp.hyperlink)
         run = {
             "text": sp.text,
             "font_latin": font_latin,
@@ -296,7 +347,8 @@ class Converter:
             "color": sp.color,
             "bold": sp.bold,
             "italic": sp.italic,
-            "underline": getattr(sp, "underline", False),
+            "underline": getattr(sp, "underline", False) or bool(sp.hyperlink),
+            "hyperlink_rel_id": hyperlink_rel_id,
         }
         align = "left"
         docx_builder.add_textbox(

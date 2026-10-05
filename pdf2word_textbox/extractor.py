@@ -28,6 +28,7 @@ class TextSpan:
     descender: float = -0.2
     underline: bool = False  # 由后处理检测
     strike: bool = False
+    hyperlink: Optional[str] = None  # 超链接 URI(由后处理匹配)
 
     @property
     def bold(self) -> bool:
@@ -52,6 +53,15 @@ class Drawing:
 
 
 @dataclass
+class LinkItem:
+    """超链接注释。"""
+    bbox: tuple[float, float, float, float]
+    uri: Optional[str]      # 外部 URI
+    kind: str = "uri"       # uri | page | named
+    target_page: Optional[int] = None  # 内部跳转目标页
+
+
+@dataclass
 class ImageItem:
     """图片。"""
     bbox: tuple[float, float, float, float]
@@ -70,6 +80,7 @@ class PageElements:
     spans: list[TextSpan] = field(default_factory=list)
     drawings: list[Drawing] = field(default_factory=list)
     images: list[ImageItem] = field(default_factory=list)
+    links: list[LinkItem] = field(default_factory=list)
 
 
 class PDFExtractor:
@@ -108,6 +119,8 @@ class PDFExtractor:
         self._extract_drawings(page, pe)
         # 3. 图片
         self._extract_images(page, pe)
+        # 4. 超链接
+        self._extract_links(page, pe)
         return pe
 
     def extract_all(self, start: int = 0, end: int | None = None) -> list[PageElements]:
@@ -227,3 +240,47 @@ class PDFExtractor:
                 height=base.get("height", 0),
                 ext=base.get("ext", "png"),
             ))
+
+    # ---------- 超链接 ----------
+    def _extract_links(self, page, pe: PageElements):
+        """提取超链接注释,并匹配到对应文本 span。
+
+        PyMuPDF 的 ``page.get_links()`` 返回链接列表,每个链接含:
+        - 'kind': LINK_URI(外部)、LINK_GOTO(内部跳转)等
+        - 'from': 链接矩形 Rect
+        - 'uri': 外部 URI(LINK_URI 时)
+        - 'page': 目标页(LINK_GOTO 时)
+        """
+        try:
+            links = page.get_links()
+        except Exception:
+            links = []
+        for lk in links:
+            frm = lk.get("from")
+            if not frm:
+                continue
+            x0, y0, x1, y1 = frm
+            # 跳过 0 尺寸
+            if x1 - x0 < 1 or y1 - y0 < 1:
+                continue
+            kind = lk.get("kind", 0)
+            uri = lk.get("uri")
+            target_page = lk.get("page")  # 0-based
+            li = LinkItem(
+                bbox=(x0, y0, x1, y1),
+                uri=uri,
+                kind="uri" if kind == fitz.LINK_URI else ("page" if kind == fitz.LINK_GOTO else "named"),
+                target_page=target_page,
+            )
+            pe.links.append(li)
+            # 匹配到 span:span 的中心点在 link 矩形内,则标记 hyperlink
+            for sp in pe.spans:
+                if sp.hyperlink:
+                    continue
+                cx = (sp.bbox[0] + sp.bbox[2]) / 2
+                cy = (sp.bbox[1] + sp.bbox[3]) / 2
+                if x0 <= cx <= x1 and y0 <= cy <= y1:
+                    if uri:
+                        sp.hyperlink = uri
+                    elif li.kind == "page" and target_page is not None:
+                        sp.hyperlink = f"#page{target_page + 1}"
