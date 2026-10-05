@@ -292,11 +292,51 @@ WPS 中均能正确渲染,兼容性最佳。
 
 ---
 
+## 字体说明
+
+> ⚠️ **本工具不含任何字体文件**。为获得最佳 1:1 复刻效果,请安装原 PDF 使用的字体。
+
+PDF 转 Word 时,若系统未安装原字体(如仿宋、黑体),Word 会用替代字体渲染,
+导致字形与宽度差异——这不是工具 bug,而是字体替换的固有问题。
+
+### 推荐字体安装
+
+| 来源 | 链接 | 含字体 |
+|------|------|--------|
+| zhyounger/FontsFromWindows | https://github.com/zhyounger/FontsFromWindows/tree/master/fonts | 仿宋/宋体/黑体/楷体/华文系列/方正小标宋 |
+| DoveOutland/Common-Chinese-office-fonts-font-library- | https://github.com/DoveOutland/Common-Chinese-office-fonts-font-library- | 仿宋/宋体/黑体/楷体/Times New Roman/方正系列 |
+| 晋城市财政局字体包(公文场景) | http://czj.jcgov.gov.cn/ggfw/xzzx/202506/P020250624600205358001.zip | 官方常用办公字体合集 |
+
+**Linux 安装**:
+
+```bash
+git clone https://github.com/zhyounger/FontsFromWindows.git
+git clone https://github.com/DoveOutland/Common-Chinese-office-fonts-font-library-.git
+mkdir -p ~/.local/share/fonts/cn-office
+cp FontsFromWindows/fonts/*.{ttf,ttc} ~/.local/share/fonts/cn-office/
+cp "Common-Chinese-office-fonts-font-library-/"*.{ttf,ttc} ~/.local/share/fonts/cn-office/
+fc-cache -f
+```
+
+### 工具的字体处理机制
+
+1. **字体名识别**:去除子集前缀(`FAAAAH+FangSong,Bold` → `仿宋`),映射 30+ 常见中文字体
+2. **字号整数化**:消除 PDF 浮点误差(`13.99` → `14.0`,容差 0.1pt)
+3. **系统可用性检测**:`fc-list` 检测字体是否安装,未安装时智能回退到已有中文字体
+
+详细说明与版权免责声明见 [FONTS.md](FONTS.md)。
+
+> **免责声明**:本工具不分发字体文件,字体版权归各自所有者。商业使用方正/华文
+> 等付费字体前请购买授权。外部字体仓库链接仅为方便获取,本工具不对其合法性负责。
+
+---
+
 ## 限制与已知问题
 
 1. **字体替换**:若目标系统未安装原 PDF 使用的字体(如仿宋、黑体),Word 会
-   使用替代字体,可能导致文本宽度变化。本工具通过文本宽度估算 + 禁止折行缓解,
-   建议在安装了原字体的系统上使用。
+   使用替代字体,可能导致文本宽度变化。本工具已实现系统字体可用性检测 + 智能
+   回退 + 字号整数化 + 宽度估算防折行。**建议按 [字体说明](#字体说明) 安装
+   常用中文字体以获得最佳效果。**
 2. **可编辑性**:由于使用文本框定位,生成的 docx 不适合大段文字编辑(移动一个
    文本框不会影响其他文本框)。如需可编辑文档,请用 pdf2docx。
 3. **复杂表格**:表格按单元格文本框复刻(位置精确),但不还原为 docx 原生表格
@@ -331,6 +371,15 @@ pdf2word-textbox/
 ---
 
 ## 更新日志
+
+### v1.2.0 (2025-10)
+
+- 🔤 **字体说明文档**:新增 FONTS.md,详述字体安装方案(2个GitHub字体仓库 + 晋城市财政局字体包)与版权免责声明
+- 📏 **字号整数化**:`normalize_size` 消除 PDF 浮点误差(13.99→14.0,容差0.1pt)
+- 🔍 **系统字体可用性检测**:`fc-list` 检测字体是否安装,`is_font_available` + `get_font_roles_checked` 智能回退
+- 🔠 **字体映射扩充**:新增方正系列(FZFangSong/FZKai/FZHei/FZXiaoBiaoSong)识别
+- 📊 对比图重新生成(安装字体后,第3页平均像素差从19.6降至15.9,改善18%)
+- README 新增"字体说明"章节与免责声明
 
 ### v1.1.0 (2025-10)
 

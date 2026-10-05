@@ -326,6 +326,7 @@ class Converter:
                                   pe: PageElements, z: int = 10,
                                   doc: Optional[Document] = None):
         """把一个文本 span 作为文本框放置(精确坐标)。"""
+        from .fonts import get_font_roles_checked
         x0, y0, x1, y1 = sp.bbox
         w = max(x1 - x0, 1.0)
         h = max(y1 - y0, sp.size, 1.0)
@@ -334,7 +335,8 @@ class Converter:
         w = max(w, est_w * 1.4) + 4.0
         # 高度也略加 buffer,避免被裁剪
         h = max(h, sp.size * 1.2)
-        font_latin, font_ea = get_font_roles(sp.font)
+        # 字体:检测系统可用性,不可用时回退
+        font_latin, font_ea, ea_available = get_font_roles_checked(sp.font)
         # 超链接 rel_id
         hyperlink_rel_id = None
         if sp.hyperlink and doc is not None:

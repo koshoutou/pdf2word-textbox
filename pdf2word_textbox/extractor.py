@@ -133,7 +133,7 @@ class PDFExtractor:
     def _extract_text(self, page, pe: PageElements):
         """用 'dict' 模式提取文本,保留 span 级别的精确信息。"""
         from .colors import to_hex_color
-        from .fonts import has_cjk
+        from .fonts import has_cjk, normalize_size
 
         try:
             d = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
@@ -152,16 +152,15 @@ class PDFExtractor:
                     if bbox[2] - bbox[0] < 0.1 and text.strip() == "":
                         continue
                     font = span.get("font", "Arial")
-                    size = span.get("size", 12)
+                    # 字号整数化:消除 PDF 浮点误差(13.99→14.0)
+                    size = normalize_size(span.get("size", 12))
                     color = to_hex_color(span.get("color", 0))
                     flags = span.get("flags", 0)
-                    # 处理下划线:PyMuPDF 不直接给,需要从字符标志位推断
-                    # flags bit 0 = superscript;下划线无标准位,后续由 drawings 推断
                     pe.spans.append(TextSpan(
                         bbox=tuple(bbox),
                         text=text,
                         font=font,
-                        size=round(size, 2),
+                        size=size,
                         color=color,
                         flags=flags,
                         ascender=span.get("ascender", 0.8),

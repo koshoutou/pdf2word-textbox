@@ -6,12 +6,21 @@ PDF 字体名通常带有子集前缀(如 ``ABCDEF+SimSun``)和样式后缀。
 - 去除子集前缀
 - 识别常见中文字体并映射到 eastAsia 字体
 - 识别粗体/斜体/等宽标记
+- 字号整数化(消除 PDF 浮点误差)
+- 系统字体可用性检测(用于决定是否回退)
 - 回退到合理默认字体
+
+字体安装提示:本工具本身不含字体文件。为获得最佳渲染效果,建议安装
+Windows 常用中文字体(仿宋/黑体/宋体/楷体/华文系列)。详见 README
+"字体说明"章节。
 """
 from __future__ import annotations
 import re
+import os
+import subprocess
+from functools import lru_cache
 
-# 常见中文字体名 → 标准中文字体
+# 常见中文字体名 → 标准中文字体(docx eastAsia 字体名)
 CJK_FONT_MAP = {
     # 宋体类
     "simsun": "宋体", "songti": "宋体", "song": "宋体",
@@ -32,6 +41,10 @@ CJK_FONT_MAP = {
     "stkaiti": "华文楷体", "stcaiyun": "华文彩云",
     "li": "隶书", "suli": "隶书",
     "youyuan": "幼圆",
+    # 方正系列(常见于公文)
+    "fzfangsong": "方正仿宋_GBK", "fzkai": "方正楷体_GBK",
+    "fzhei": "方正黑体_GBK", "fzxiaobiaosong": "方正小标宋_GBK",
+    "fzdabiaosong": "方正大标宋简体",
 }
 
 # 西文字体名标准化
@@ -136,3 +149,85 @@ def font_flags_to_style(flags: int) -> dict:
         "monospace": bool(flags & 8),
         "serif": bool(flags & 4),
     }
+
+
+def normalize_size(size: float, tolerance: float = 0.1) -> float:
+    """字号整数化:消除 PDF 浮点误差。
+
+    PDF 中字号常以矩阵缩放计算,可能产生 13.99 / 14.01 这类本应是 14.0 的值。
+    本函数将接近整数的字号规整为整数,其余保留 1 位小数。
+
+    Args:
+        size: 原始字号(pt)
+        tolerance: 整数容差(默认 0.1pt)
+
+    Returns:
+        规整后的字号
+    """
+    if size is None:
+        return 12.0
+    rounded = round(size)
+    if abs(size - rounded) <= tolerance:
+        return float(rounded)
+    return round(size, 1)
+
+
+@lru_cache(maxsize=1)
+def list_system_fonts() -> set[str]:
+    """列出系统已安装的字体名(用 fc-list,带缓存)。
+
+    Returns:
+        字体名集合(小写)。若 fc-list 不可用则返回空集(不做可用性检测)。
+    """
+    names: set[str] = set()
+    try:
+        out = subprocess.run(
+            ["fc-list", ":", "family"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in out.stdout.splitlines():
+            fam = line.strip()
+            if fam:
+                names.add(fam.lower())
+    except Exception:
+        pass
+    return names
+
+
+@lru_cache(maxsize=128)
+def is_font_available(font_name: str) -> bool:
+    """检测指定字体名是否在系统已安装(用于决定是否回退)。
+
+    匹配规则:字体名(小写、去空格)在系统字体集合中,或其任意前缀子串匹配。
+    """
+    if not font_name:
+        return False
+    sys_fonts = list_system_fonts()
+    if not sys_fonts:
+        return True  # 无法检测时假定可用,不强制回退
+    key = font_name.lower().replace(" ", "")
+    if key in sys_fonts:
+        return True
+    # 中文字体名直接匹配
+    if font_name in sys_fonts or any(font_name in f for f in sys_fonts):
+        return True
+    return False
+
+
+def get_font_roles_checked(name: str) -> tuple[str, str, bool]:
+    """返回 (latin_font, eastasia_font, eastasia_available)。
+
+    与 :func:`get_font_roles` 相同,但额外检测 eastAsia 字体是否在系统可用。
+    若不可用,会回退到系统已有的中文衬线/无衬线字体,避免渲染时被替换。
+    """
+    latin, ea = get_font_roles(name)
+    if is_font_available(ea):
+        return latin, ea, True
+    # 回退:优先用系统已有的常见中文字体
+    fallbacks = ["宋体", "SimSun", "Noto Serif SC", "Noto Sans CJK SC",
+                 "WenQuanYi Zen Hei", "仿宋", "FangSong"]
+    sys_fonts = list_system_fonts()
+    for fb in fallbacks:
+        if fb.lower() in sys_fonts or fb in sys_fonts:
+            return latin, fb, False
+    return latin, ea, False
