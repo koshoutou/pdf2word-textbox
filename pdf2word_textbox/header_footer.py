@@ -131,15 +131,11 @@ def detect_header_footer(
     if not pages:
         return HeaderFooterConfig(has_header=False, has_footer=False), []
 
-    # 用第一页确定默认区域高度
-    p0 = pages[0]
-    default_header_h = p0.height * header_ratio
-    default_footer_h = p0.height * footer_ratio
+    n_pages = len(pages)
 
     # 1. 统计页眉/页脚区域的重复文本
     header_texts = Counter()
     footer_texts = Counter()
-    n_pages = len(pages)
     for pe in pages:
         h_thresh = pe.height * header_ratio
         f_thresh = pe.height * (1 - footer_ratio)
@@ -153,20 +149,20 @@ def detect_header_footer(
             elif cy >= f_thresh:
                 footer_texts[key] += 1
 
-    # 重复出现 >= 一半页面 → 真正的页眉/页脚文本
-    min_repeat = max(2, n_pages // 3)
-    has_header = any(v >= min_repeat for v in header_texts.values()) or n_pages < 5
-    has_footer = any(v >= min_repeat for v in footer_texts.values()) or n_pages < 5
+    # 重复出现阈值:>=2 页且 >= 1/3 页数才算真正页眉/页脚
+    # 不再对短文档(n_pages<5)强制开启——避免单页文档误判
+    min_repeat = max(2, n_pages // 3) if n_pages >= 3 else max(2, n_pages)
+    has_header = any(v >= min_repeat for v in header_texts.values())
+    has_footer = any(v >= min_repeat for v in footer_texts.values())
 
-    # 2. 找页眉/页脚分割线(用第一页作代表,后续每页单独找)
     cfg = HeaderFooterConfig(
-        header_height=default_header_h,
-        footer_height=default_footer_h,
+        header_height=0,
+        footer_height=0,
         has_header=has_header,
         has_footer=has_footer,
     )
 
-    # 3. 每页区域划分
+    # 3. 每页区域划分(每页独立计算 header_top/footer_top)
     regions = []
     for pe in pages:
         h_thresh = pe.height * header_ratio
@@ -175,19 +171,16 @@ def detect_header_footer(
         h_divs = detect_dividers_in_region(pe.drawings, 0, h_thresh + 10, "header")
         f_divs = detect_dividers_in_region(pe.drawings, f_thresh - 10, pe.height, "footer")
         # 页眉区域底边 = 页眉分割线的 y(若有),否则用默认
-        header_top = h_thresh
+        header_top = h_thresh if has_header else 0
         if h_divs:
-            # 取最低的分割线作为页眉区域底边
             header_top = max(d.bbox[3] for d in h_divs) + 2
         # 页脚区域顶边 = 页脚分割线的 y(若有),否则用默认
-        footer_top = f_thresh
+        footer_top = f_thresh if has_footer else pe.height
         if f_divs:
             footer_top = min(d.bbox[1] for d in f_divs) - 2
 
-        # 收集分割线到文档配置(用第一页的作代表)
+        # 文档级配置用第一页(仅用于日志/默认)
         if pe.page_index == 0:
-            cfg.header_dividers = h_divs
-            cfg.footer_dividers = f_divs
             cfg.header_height = header_top
             cfg.footer_height = pe.height - footer_top
 

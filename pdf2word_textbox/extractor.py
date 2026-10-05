@@ -29,6 +29,8 @@ class TextSpan:
     underline: bool = False  # 由后处理检测
     strike: bool = False
     hyperlink: Optional[str] = None  # 超链接 URI(由后处理匹配)
+    rotation: float = 0.0  # 旋转角度(度,顺时针);0=水平,90=竖排
+    wmode: int = 0  # 书写模式:0=水平,1=竖排
 
     @property
     def bold(self) -> bool:
@@ -50,6 +52,8 @@ class Drawing:
     # 原始路径项,用于精确复刻
     items: list = field(default_factory=list)
     closed: bool = False
+    # #5.3 修复:标记为下划线(检测到后,该 drawing 不再作为形状绘制,避免双重线)
+    is_underline: bool = False
 
 
 @dataclass
@@ -89,8 +93,18 @@ class PDFExtractor:
     def __init__(self, pdf_path: str, password: str = ""):
         self.pdf_path = pdf_path
         self.doc = fitz.open(pdf_path)
-        if password:
-            self.doc.authenticate(password)
+        # #9 修复:检查加密状态并校验密码
+        if self.doc.is_encrypted:
+            if not password:
+                raise ValueError(
+                    "PDF 已加密,请提供 password 参数。"
+                    "(Encrypted PDF: password required)"
+                )
+            if not self.doc.authenticate(password):
+                raise ValueError(
+                    "PDF 密码错误,无法解密。"
+                    "(Wrong password: authentication failed)"
+                )
         self.page_count = self.doc.page_count
 
     def close(self):
@@ -132,7 +146,7 @@ class PDFExtractor:
     # ---------- 文本 ----------
     def _extract_text(self, page, pe: PageElements):
         """用 'dict' 模式提取文本,保留 span 级别的精确信息。"""
-        from .colors import to_hex_color
+        from .colors import span_color_to_hex
         from .fonts import has_cjk, normalize_size
 
         try:
@@ -143,6 +157,9 @@ class PDFExtractor:
             if block.get("type", 0) != 0:  # 0=文本,1=图片
                 continue
             for line in block.get("lines", []):
+                # 读取行级变换矩阵(用于旋转/竖排文本)
+                line_dir = line.get("dir", (1.0, 0.0))  # (cos, sin)
+                line_wmode = line.get("wmode", 0)  # 0=水平, 1=竖排
                 for span in line.get("spans", []):
                     text = span.get("text", "")
                     if text == "":
@@ -154,8 +171,13 @@ class PDFExtractor:
                     font = span.get("font", "Arial")
                     # 字号整数化:消除 PDF 浮点误差(13.99→14.0)
                     size = normalize_size(span.get("size", 12))
-                    color = to_hex_color(span.get("color", 0))
+                    # span["color"] 是打包整数 0xRRGGBB,用专门函数处理
+                    color = span_color_to_hex(span.get("color", 0))
                     flags = span.get("flags", 0)
+                    # 旋转角度(度):从行方向向量计算
+                    import math
+                    cos_a, sin_a = line_dir
+                    angle = math.degrees(math.atan2(sin_a, cos_a))
                     pe.spans.append(TextSpan(
                         bbox=tuple(bbox),
                         text=text,
@@ -165,6 +187,8 @@ class PDFExtractor:
                         flags=flags,
                         ascender=span.get("ascender", 0.8),
                         descender=span.get("descender", -0.2),
+                        rotation=round(angle, 2),
+                        wmode=line_wmode,
                     ))
 
     # ---------- 矢量图形 ----------
@@ -214,11 +238,17 @@ class PDFExtractor:
 
     # ---------- 图片 ----------
     def _extract_images(self, page, pe: PageElements):
-        """提取图片(含 bbox 与字节数据)。"""
+        """提取图片(含 bbox 与字节数据)。
+
+        #5.6 修复:
+        - 用 xref 去重(同一图片跨页/同页复用只存一份,减小体积)
+        - 尝试用 Pixmap 渲染含 SMask 的透明图片(避免黑底)
+        """
         try:
             info = page.get_image_info(xrefs=True)
         except Exception:
             info = []
+        seen_xrefs: set[int] = set()
         for im in info:
             bbox = im.get("bbox")
             if not bbox:
@@ -226,18 +256,38 @@ class PDFExtractor:
             xref = im.get("xref", 0)
             if not xref:
                 continue
+            # #5.6 去重:同 xref 跳过(已在别处存过)
+            if xref in seen_xrefs:
+                continue
+            seen_xrefs.add(xref)
             try:
                 base = self.doc.extract_image(xref)
             except Exception:
                 continue
             if not base or not base.get("image"):
                 continue
+            data = base["image"]
+            ext = base.get("ext", "png")
+            # #5.6 修复:若图片有 SMask(软掩码/透明),合成到白底避免黑底
+            smask = base.get("smask", 0)
+            if smask:
+                try:
+                    pix = fitz.Pixmap(self.doc, xref)
+                    if pix.alpha:
+                        # 合成 alpha 到白底
+                        pix = fitz.Pixmap(pix, 0) if pix.n >= 5 else pix
+                        pix.set_dpi(72, 72)
+                        data = pix.tobytes("png")
+                        ext = "png"
+                    pix = None
+                except Exception:
+                    pass
             pe.images.append(ImageItem(
                 bbox=tuple(bbox),
-                data=base["image"],
+                data=data,
                 width=base.get("width", 0),
                 height=base.get("height", 0),
-                ext=base.get("ext", "png"),
+                ext=ext,
             ))
 
     # ---------- 超链接 ----------

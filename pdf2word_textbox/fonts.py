@@ -157,6 +157,9 @@ def normalize_size(size: float, tolerance: float = 0.1) -> float:
     PDF 中字号常以矩阵缩放计算,可能产生 13.99 / 14.01 这类本应是 14.0 的值。
     本函数将接近整数的字号规整为整数,其余保留 1 位小数。
 
+    #5.11 修复:用数学舍入(加 0.5 取 floor)替代 Python round 的银行家舍入,
+    避免 round(13.5)=14、round(14.5)=14 的不直观行为。
+
     Args:
         size: 原始字号(pt)
         tolerance: 整数容差(默认 0.1pt)
@@ -166,10 +169,13 @@ def normalize_size(size: float, tolerance: float = 0.1) -> float:
     """
     if size is None:
         return 12.0
-    rounded = round(size)
+    # 数学舍入:加 0.5 取 floor(正数)
+    import math
+    rounded = math.floor(size + 0.5)
     if abs(size - rounded) <= tolerance:
         return float(rounded)
-    return round(size, 1)
+    # 非整数:保留 1 位小数(同样用数学舍入)
+    return math.floor(size * 10 + 0.5) / 10.0
 
 
 @lru_cache(maxsize=1)

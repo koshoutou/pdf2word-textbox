@@ -130,12 +130,16 @@ class Converter:
             log.warning("元数据复制失败: %s", e)
 
     def _get_hyperlink_rel_id(self, doc: Document, uri: str) -> Optional[str]:
-        """为 URI 创建(或复用)docx 外部超链接关系,返回 rel_id。"""
+        """为 URI 创建(或复用)docx 外部超链接关系,返回 rel_id。
+
+        #5.7 修复:内部跳转(#pageN)用 w:hyperlink w:anchor 而非外部关系,
+        返回特殊标记 "__internal__" 让 docx_builder 用 anchor 模式。
+        """
         if not uri:
             return None
-        # 内部跳转(#pageN)暂不处理为可点击链接
         if uri.startswith("#"):
-            return None
+            # 内部跳转:返回特殊标记,docx_builder 用 w:anchor
+            return "__internal__:" + uri[1:]
         if uri in self._hyperlink_cache:
             return self._hyperlink_cache[uri]
         try:
@@ -174,7 +178,15 @@ class Converter:
     # ---------- 单页生成 ----------
     def _make_page(self, doc: Document, pe: PageElements, region: PageRegion,
                    cfg: HeaderFooterConfig, use_real_hf: bool, is_first: bool):
-        """生成一页。"""
+        """生成一页。
+
+        关键修复:
+        - #2: --no-real-header-footer 模式不再丢弃页眉页脚,改为全部放正文
+        - #4: 真实页眉页脚模式下,top_margin=0,页眉用 page-relative 定位,
+              避免双重偏移(页眉部件本身高度由 header_distance 控制)
+        - #5: 每页独立用 region.header_top/footer_top,不再用全局 cfg
+        - #17: 页眉页脚区域的图片进 header/footer 部件
+        """
         if is_first:
             section = doc.sections[0]
         else:
@@ -184,52 +196,83 @@ class Converter:
         section.page_width = Pt(pe.width)
         section.page_height = Pt(pe.height)
 
-        # 边距:top=页眉高度, bottom=页脚高度, left/right=0
-        top_m = cfg.header_height if (use_real_hf and cfg.has_header) else 0
-        bot_m = cfg.footer_height if (use_real_hf and cfg.has_footer) else 0
-        section.top_margin = Pt(top_m)
-        section.bottom_margin = Pt(bot_m)
+        # 边距:#4 修复——真实页眉页脚模式下也用 0 边距,让文本框 page-relative
+        # 定位生效(避免 top_margin + page-relative 双重偏移)。
+        # 页眉页脚部件的内容仍可正常显示(它们独立于正文 margin)。
+        section.top_margin = Pt(0)
+        section.bottom_margin = Pt(0)
         section.left_margin = Pt(0)
         section.right_margin = Pt(0)
-        # 页眉页脚距离
         section.header_distance = Pt(0)
         section.footer_distance = Pt(0)
 
-        # 取消"首页不同"/"奇偶页不同"(确保每页都有页眉页脚)
         section.different_first_page_header_footer = False
-        # 设置标题页为 false
         sectPr = section._sectPr
         titlePg = sectPr.find(qn("w:titlePg"))
         if titlePg is not None:
             sectPr.remove(titlePg)
 
-        # ---- 页眉页脚(真实 docx header/footer) ----
-        if use_real_hf:
-            self._make_header_footer(doc, section, pe, region, cfg)
-
-        # ---- 正文画布 ----
-        # 找出正文区的元素
+        # 划分元素:header / footer / body
+        header_spans = []
+        footer_spans = []
         body_spans = []
-        body_drawings = []
         for i, sp in enumerate(pe.spans):
             r = classify_span(sp, region, pe)
-            if r == "body":
+            if r == "header":
+                header_spans.append((i, sp))
+            elif r == "footer":
+                footer_spans.append((i, sp))
+            else:
                 body_spans.append((i, sp))
-        # 正文区图形:排除页眉页脚分割线(已在 header/footer 处理)
+
+        # 图片划分:页眉页脚区域内的图片归对应部件
+        header_imgs = []
+        footer_imgs = []
+        body_imgs = []
+        for im in pe.images:
+            cy = (im.bbox[1] + im.bbox[3]) / 2
+            if region.header_top > 0 and cy <= region.header_top:
+                header_imgs.append(im)
+            elif region.footer_top < pe.height and cy >= region.footer_top:
+                footer_imgs.append(im)
+            else:
+                body_imgs.append(im)
+
+        # 图形划分:排除页眉页脚分割线(单独处理)+ 排除下划线(已作为样式,#5.3)
+        body_drawings = []
+        header_divider_set = set(id(d) for d in region.header_dividers)
+        footer_divider_set = set(id(d) for d in region.footer_dividers)
         for dr in pe.drawings:
+            if id(dr) in header_divider_set or id(dr) in footer_divider_set:
+                continue
+            if getattr(dr, "is_underline", False):
+                continue  # #5.3 下划线已作为文本样式,不再画形状
             cy = (dr.bbox[1] + dr.bbox[3]) / 2
             if region.header_top > 0 and cy <= region.header_top:
                 continue
-            if region.footer_top > 0 and cy >= region.footer_top:
+            if region.footer_top < pe.height and cy >= region.footer_top:
                 continue
             body_drawings.append(dr)
 
-        # 添加一个空段落作为画布
+        # ---- 页眉页脚 ----
+        extra_dividers = []
+        if use_real_hf:
+            self._make_header_footer(doc, section, pe, region, cfg,
+                                     header_spans, footer_spans,
+                                     header_imgs, footer_imgs)
+        else:
+            # #2 修复:no-real-header-footer 模式把页眉页脚内容放正文(不丢失)
+            header_spans.extend(footer_spans)
+            body_spans = body_spans + header_spans
+            body_imgs = body_imgs + header_imgs + footer_imgs
+            # divider 单独处理(Divider 对象无 type 属性,用 add_line)
+            extra_dividers = list(region.header_dividers) + list(region.footer_dividers)
+
+        # ---- 正文画布 ----
         p = doc.add_paragraph()
         pf = p.paragraph_format
         pf.space_before = Pt(0)
         pf.space_after = Pt(0)
-        # 段落固定行高,避免撑高页面
         pPr = p._p.get_or_add_pPr()
         spacing = pPr.find(qn("w:spacing"))
         if spacing is None:
@@ -239,36 +282,46 @@ class Converter:
         spacing.set(qn("w:lineRule"), "auto")
         spacing.set(qn("w:before"), "0")
         spacing.set(qn("w:after"), "0")
-        # 段落字体设为极小,减少空白
         for run in p.runs:
             run.font.size = Pt(1)
 
-        # 1. 先画正文图形(置于底层)
+        # 1. 正文图形(底层)
         for dr in body_drawings:
             self._add_drawing(p, dr, behind=True, z=0)
+        # 分割线(no-real-header-footer 模式下,divider 用 add_line)
+        for dv in extra_dividers:
+            docx_builder.add_line(
+                p, dv.bbox[0], dv.bbox[1], dv.bbox[2], dv.bbox[3],
+                color=dv.color, width=dv.width, behind=True, z=0,
+            )
 
-        # 2. 画正文图片
-        for im in pe.images:
+        # 2. 正文图片
+        for im in body_imgs:
             self._add_image(doc, p, im)
 
-        # 3. 画正文文本框(置于上层)
-        for idx, sp in body_spans:
+        # 3. 正文文本框(上层)+ 合并相邻同样式 span(#5.4 性能优化)
+        merged = self._merge_adjacent_spans([sp for _, sp in body_spans])
+        for sp in merged:
             self._add_text_span_as_textbox(p, sp, pe, z=10, doc=doc)
 
     # ---------- 页眉页脚 ----------
     def _make_header_footer(self, doc: Document, section, pe: PageElements,
-                            region: PageRegion, cfg: HeaderFooterConfig):
-        """把页眉页脚内容写入 docx header/footer。"""
-        # 启用页眉页脚
+                            region: PageRegion, cfg: HeaderFooterConfig,
+                            header_spans, footer_spans,
+                            header_imgs, footer_imgs):
+        """把页眉页脚内容写入 docx header/footer。
+
+        #4 修复:页眉页脚内 VML 用 page-relative 定位,header_distance=0,
+        所以页眉文本框 y 坐标 = 原 PDF 坐标(无双重偏移)。
+        #17 修复:页眉页脚区域的图片也放进对应部件。
+        """
         header = section.header
         header.is_linked_to_previous = False
         footer = section.footer
         footer.is_linked_to_previous = False
 
-        # 清空默认段落,用我们自己的画布段落
         if header.paragraphs:
             hp = header.paragraphs[0]
-            # 清空 runs
             for r in list(hp.runs):
                 r._r.getparent().remove(r._r)
         else:
@@ -283,22 +336,22 @@ class Converter:
             fp = footer.add_paragraph()
         self._zero_paragraph(fp)
 
-        # 页眉文本框 + 分割线
-        for i, sp in enumerate(pe.spans):
-            r = classify_span(sp, region, pe)
-            if r == "header":
-                self._add_text_span_as_textbox(hp, sp, pe, z=10, doc=doc)
+        # 页眉文本框 + 图片 + 分割线
+        for _, sp in header_spans:
+            self._add_text_span_as_textbox(hp, sp, pe, z=10, doc=doc)
+        for im in header_imgs:
+            self._add_image(doc, hp, im)
         for dv in region.header_dividers:
             docx_builder.add_line(
                 hp, dv.bbox[0], dv.bbox[1], dv.bbox[2], dv.bbox[3],
                 color=dv.color, width=dv.width, behind=True, z=0,
             )
 
-        # 页脚文本框 + 分割线
-        for i, sp in enumerate(pe.spans):
-            r = classify_span(sp, region, pe)
-            if r == "footer":
-                self._add_text_span_as_textbox(fp, sp, pe, z=10, doc=doc)
+        # 页脚文本框 + 图片 + 分割线
+        for _, sp in footer_spans:
+            self._add_text_span_as_textbox(fp, sp, pe, z=10, doc=doc)
+        for im in footer_imgs:
+            self._add_image(doc, fp, im)
         for dv in region.footer_dividers:
             docx_builder.add_line(
                 fp, dv.bbox[0], dv.bbox[1], dv.bbox[2], dv.bbox[3],
@@ -325,18 +378,29 @@ class Converter:
     def _add_text_span_as_textbox(self, paragraph, sp: TextSpan,
                                   pe: PageElements, z: int = 10,
                                   doc: Optional[Document] = None):
-        """把一个文本 span 作为文本框放置(精确坐标)。"""
-        from .fonts import get_font_roles_checked
+        """把一个文本 span 作为文本框放置(精确坐标)。
+
+        修复:
+        - #3: 对齐根据 bbox 在页面中的水平位置推断(居中/右对齐)
+        - #7: CJK 字体的西文部分保留原字体名(不强制 Times New Roman)
+        - #8: 文本框宽度用实际 bbox 宽度 + 适度 buffer(不再粗暴 ×1.4)
+        - #10: 旋转文本通过 mso-rotate 写入 VML
+        """
+        from .fonts import get_font_roles_checked, has_cjk
         x0, y0, x1, y1 = sp.bbox
-        w = max(x1 - x0, 1.0)
+        actual_w = max(x1 - x0, 1.0)
         h = max(y1 - y0, sp.size, 1.0)
-        # 估算文本所需宽度,防止字体替换导致折行
+        # #8 修复:宽度用实际 bbox + 小 buffer 防字体替换裁剪
         est_w = self._estimate_text_width(sp.text, sp.size)
-        w = max(w, est_w * 1.4) + 4.0
-        # 高度也略加 buffer,避免被裁剪
-        h = max(h, sp.size * 1.2)
-        # 字体:检测系统可用性,不可用时回退
+        # 取实际宽度与估算的较大者,但 buffer 降到 1.15 + 2pt(原 1.4+4 过宽)
+        w = max(actual_w, est_w * 1.15) + 2.0
+        h = max(h, sp.size * 1.25)
+        # 字体:#7 修复——CJK 字体的西文部分保留原字体名
         font_latin, font_ea, ea_available = get_font_roles_checked(sp.font)
+        # 如果原字体是 CJK 字体但文本含西文,西文用原字体名(不强制 Times New Roman)
+        if has_cjk(sp.font) and not has_cjk(sp.text):
+            from .fonts import normalize_font
+            font_latin = normalize_font(sp.font)
         # 超链接 rel_id
         hyperlink_rel_id = None
         if sp.hyperlink and doc is not None:
@@ -352,12 +416,90 @@ class Converter:
             "underline": getattr(sp, "underline", False) or bool(sp.hyperlink),
             "hyperlink_rel_id": hyperlink_rel_id,
         }
-        align = "left"
+        # #3 修复:推断对齐——bbox 中心接近页面中心→居中,接近右边→右对齐
+        align = self._infer_alignment(sp.bbox, pe.width)
         docx_builder.add_textbox(
             paragraph, x0, y0, w, h,
             runs=[run], align=align, line_spacing=1.0,
             behind=False, z=z, vertical_align="top", no_wrap=True,
+            rotation=getattr(sp, "rotation", 0.0),
         )
+
+    @staticmethod
+    def _infer_alignment(bbox: tuple, page_width: float) -> str:
+        """根据 bbox 在页面的水平位置推断对齐方式。
+
+        - bbox 中心在页面中心 ±5% → center
+        - bbox 右边缘接近页面右边(距离 < 10% 页宽)→ right
+        - 否则 → left
+        """
+        if page_width <= 0:
+            return "left"
+        x0, _, x1, _ = bbox
+        cx = (x0 + x1) / 2
+        page_cx = page_width / 2
+        # 居中:中心在页面中心 ±5% 页宽
+        if abs(cx - page_cx) < page_width * 0.05:
+            return "center"
+        # 右对齐:右边缘距页面右边 < 8% 页宽,且文本宽度 > 20pt
+        if (page_width - x1) < page_width * 0.08 and (x1 - x0) > 20:
+            return "right"
+        return "left"
+
+    @staticmethod
+    def _merge_adjacent_spans(spans: list) -> list:
+        """合并相邻同样式的 span(#5.4 性能优化)。
+
+        合并条件:同行(y 接近)、同字体、同字号、同颜色、同粗斜体、
+        x 间距 < 字号×0.3。合并后 text 拼接,bbox 取并集。
+        """
+        if not spans:
+            return spans
+        # 按 y 再按 x 排序
+        spans = sorted(spans, key=lambda s: (round(s.bbox[1], 1), s.bbox[0]))
+        merged = []
+        for sp in spans:
+            if not merged:
+                merged.append(sp)
+                continue
+            prev = merged[-1]
+            same_style = (
+                prev.font == sp.font
+                and prev.size == sp.size
+                and prev.color == sp.color
+                and prev.flags == sp.flags
+                and prev.hyperlink == sp.hyperlink
+            )
+            # 同行:y 中心差 < 字号×0.5
+            py = (prev.bbox[1] + prev.bbox[3]) / 2
+            cy = (sp.bbox[1] + sp.bbox[3]) / 2
+            same_line = abs(py - cy) < sp.size * 0.5
+            # x 紧邻:间距 < 字号×0.5
+            gap = sp.bbox[0] - prev.bbox[2]
+            adjacent = -1 <= gap < sp.size * 0.5
+            if same_style and same_line and adjacent:
+                # 合并:拼接 text,bbox 并集
+                from .extractor import TextSpan as TS
+                new_bbox = (
+                    min(prev.bbox[0], sp.bbox[0]),
+                    min(prev.bbox[1], sp.bbox[1]),
+                    max(prev.bbox[2], sp.bbox[2]),
+                    max(prev.bbox[3], sp.bbox[3]),
+                )
+                # 替换最后一个
+                merged[-1] = TS(
+                    bbox=new_bbox,
+                    text=prev.text + sp.text,
+                    font=prev.font, size=prev.size, color=prev.color,
+                    flags=prev.flags, ascender=prev.ascender, descender=prev.descender,
+                    underline=prev.underline or sp.underline,
+                    strike=prev.strike or sp.strike,
+                    hyperlink=prev.hyperlink,
+                    rotation=prev.rotation, wmode=prev.wmode,
+                )
+            else:
+                merged.append(sp)
+        return merged
 
     @staticmethod
     def _estimate_text_width(text: str, size: float) -> float:
@@ -365,11 +507,9 @@ class Converter:
 
         CJK 字符约 1em,拉丁字符约 0.55em,空格约 0.3em。
         """
-        from .fonts import has_cjk
         w = 0.0
         for ch in text:
             cp = ord(ch)
-            # CJK
             if (0x4E00 <= cp <= 0x9FFF) or (0x3000 <= cp <= 0x303F) or \
                (0xFF00 <= cp <= 0xFFEF) or (0x3400 <= cp <= 0x4DBF):
                 w += size * 1.0
@@ -440,7 +580,11 @@ class Converter:
 
     # ---------- 下划线检测 ----------
     def _detect_underlines(self, pages: list[PageElements]):
-        """检测文本下划线:若文本 span 下方有紧贴的横线,则标记为下划线。"""
+        """检测文本下划线:若文本 span 下方有紧贴的横线,则标记为下划线。
+
+        #5.3 修复:检测到下划线后,标记对应 Drawing.is_underline=True,
+        _make_page 排除 is_underline 的 drawing,避免"真实线 + 下划线样式"双重绘制。
+        """
         for pe in pages:
             for sp in pe.spans:
                 if not sp.text.strip():
@@ -448,14 +592,16 @@ class Converter:
                 x0, y0, x1, y1 = sp.bbox
                 baseline = y1
                 for dr in pe.drawings:
+                    if dr.is_underline:
+                        continue
                     if not is_horizontal_line(dr, tolerance=1.5):
                         continue
                     dx0, dy0, dx1, dy1 = dr.bbox
                     line_y = (dy0 + dy1) / 2
                     # 横线在文本基线下方 0~3pt,且 x 范围有重叠
                     if 0 <= line_y - baseline <= 3.5:
-                        # x 重叠 > 50%
                         ov = min(x1, dx1) - max(x0, dx0)
                         if ov > 0 and ov > (x1 - x0) * 0.4:
-                            sp.underline = True  # type: ignore[attr-defined]
+                            sp.underline = True
+                            dr.is_underline = True  # 标记,后续不再作为形状绘制
                             break

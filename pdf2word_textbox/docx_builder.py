@@ -92,6 +92,7 @@ def add_textbox(
     border: bool = False,
     vertical_align: str = "top",
     no_wrap: bool = True,
+    rotation: float = 0.0,
 ):
     """添加绝对定位(页相对)的文本框。
 
@@ -105,8 +106,9 @@ def add_textbox(
         z: 层级(用于覆盖顺序)
         fill_color: 填充色 hex
         border: 是否显示边框
-        vertical_align: top/center/bottom
+        vertical_align: top/center/bottom(#5.2 修复:写入 v-text-anchor)
         no_wrap: 是否禁止文本折行(单行渲染,保证 1:1 位置)
+        rotation: 旋转角度(度,顺时针;#5.1 修复:竖排/旋转文本)
     """
     _id = _next_id()
     z_index = z if not behind else -z
@@ -114,9 +116,7 @@ def add_textbox(
     # 构建 txbxContent 的段落
     jc = "" if align in ("left",) else f'<w:jc w:val="{align}"/>'
     line_val = int(240 * line_spacing)
-    # 禁止折行:wordWrap=0 + 不允许空格断行
     nowrap_xml = '<w:wordWrap w:val="0"/>' if no_wrap else ''
-    # 段落属性:零间距、指定对齐、禁止折行
     pPr = (f'<w:pPr>'
            f'<w:spacing w:line="{line_val}" w:lineRule="auto" '
            f'w:before="0" w:after="0" w:beforeLines="0" w:afterLines="0"/>'
@@ -137,30 +137,41 @@ def add_textbox(
             underline=run.get("underline", False),
             strike=run.get("strike", False),
         )
-        # XML 转义文本
         text = (run.get("text", "")
                 .replace("&", "&amp;")
                 .replace("<", "&lt;")
                 .replace(">", "&gt;"))
-        # 超链接:用 w:hyperlink 包裹 run
         rel_id = run.get("hyperlink_rel_id")
         if rel_id:
-            runs_xml += (f'<w:hyperlink r:id="{rel_id}" '
-                        f'xmlns:r="{R_NS}">'
-                        f'<w:r>{rPr}<w:t xml:space="preserve">{text}</w:t></w:r>'
-                        f'</w:hyperlink>')
+            if rel_id.startswith("__internal__:"):
+                # #5.7 内部跳转:用 w:anchor(书签)
+                anchor = rel_id[len("__internal__:"):]
+                runs_xml += (f'<w:hyperlink w:anchor="{anchor}" '
+                            f'xmlns:w="{W_NS}">'
+                            f'<w:r>{rPr}<w:t xml:space="preserve">{text}</w:t></w:r>'
+                            f'</w:hyperlink>')
+            else:
+                # 外部 URI
+                runs_xml += (f'<w:hyperlink r:id="{rel_id}" '
+                            f'xmlns:r="{R_NS}">'
+                            f'<w:r>{rPr}<w:t xml:space="preserve">{text}</w:t></w:r>'
+                            f'</w:hyperlink>')
         else:
             runs_xml += f'<w:r>{rPr}<w:t xml:space="preserve">{text}</w:t></w:r>'
 
     txbx_content = f'<w:txbxContent xmlns:w="{W_NS}"><w:p>{pPr}{runs_xml}</w:p></w:txbxContent>'
 
-    # VML shape
     fill_attr = "false" if not fill_color else "true"
     fill_xml = f'<v:fill color="#{fill_color}"/>' if fill_color else '<v:fill on="false"/>'
     stroke_attr = "true" if border else "false"
     stroke_xml = f'<v:stroke on="true" color="#000000" weight="0.75pt"/>' if border else '<v:stroke on="false"/>'
 
+    # #5.2 修复:垂直对齐写入 v-text-anchor
     v_anchor = {"top": "top", "center": "middle", "bottom": "bottom"}.get(vertical_align, "top")
+    # #5.1 修复:旋转角度(VML rotation 属性,顺时针为负值)
+    rot_attr = f' rotation="{-rotation:.2f}"' if abs(rotation) > 0.5 else ''
+    # 竖排文本(wmode=1)用 v-text-anchor + writing-mode
+    # VML 用 style 的 mso-text-orientation 但简单起见用 rotation=90 近似
 
     style = (f"position:absolute;"
              f"left:{_pt(x)};top:{_pt(y)};"
@@ -173,12 +184,13 @@ def add_textbox(
              f"mso-wrap-edited:f;mso-wrap:none;")
 
     shape_xml = f'''<v:shape xmlns:v="{V_NS}" xmlns:o="{O_NS}" xmlns:w10="{W10_NS}" xmlns:w="{W_NS}" xmlns:r="{R_NS}"
- id="TextBox{_id}" type="#_x0000_t202"
+ id="TextBox{_id}" type="#_x0000_t202"{rot_attr}
  style="{style}"
- filled="{fill_attr}" stroked="{stroke_attr}">
+ filled="{fill_attr}" stroked="{stroke_attr}"
+ v-text-anchor="{v_anchor}">
  {fill_xml}
  {stroke_xml}
- <v:textbox style="mso-fit-shape-to-text:false;mso-rotate:0" inset="0pt,0pt,0pt,0pt">
+ <v:textbox style="mso-fit-shape-to-text:false" inset="0pt,0pt,0pt,0pt">
  {txbx_content}
  </v:textbox>
 </v:shape>'''

@@ -25,13 +25,27 @@
 
 > 左:原始 PDF · 右:转换后 DOCX→PDF(文本框一比一复刻)
 
-**第 1 页对比**:
+**第 78 页对比**:
 
-![第1页对比](docs/images/comparison-page1.png)
+![第78页对比](docs/images/comparison-page78.png)
 
-**第 3 页对比**:
+**第 79 页对比**:
 
-![第3页对比](docs/images/comparison-page3.png)
+![第79页对比](docs/images/comparison-page79.png)
+
+**第 87 页对比**:
+
+![第87页对比](docs/images/comparison-page87.png)
+
+**第 89 页对比**:
+
+![第89页对比](docs/images/comparison-page89.png)
+
+**第 94 页对比**:
+
+![第94页对比](docs/images/comparison-page94.png)
+
+样本文件(原始 PDF + 转换后 docx)见 [`docs/samples/`](docs/samples/) 目录。
 
 ---
 
@@ -371,6 +385,38 @@ pdf2word-textbox/
 ---
 
 ## 更新日志
+
+### v1.3.0 (2025-10)
+
+**🔴 致命修复**
+- **文本颜色失真**:修复 `to_hex_color` 把 PyMuPDF span["color"](0xRRGGBB 打包整数)当灰度处理导致彩色变白;新增 `span_color_to_hex` 专门处理 span 颜色(红 FF0000 / 蓝 0000FF / 绿 00FF00 正确)
+- **--no-real-header-footer 丢页眉页脚**:该模式现在把页眉页脚内容放正文(不再丢失)
+
+**🟠 中高修复**
+- **对齐硬编码 left**:新增 `_infer_alignment` 根据 bbox 在页面位置推断居中/右对齐
+- **真实页眉页脚垂直双重偏移**:top_margin 改为 0,页眉用 page-relative 定位(避免 margin + page-relative 叠加)
+- **页眉页脚高度只取第0页**:改为每页独立用 region.header_top/footer_top
+- **旋转/竖排文本**:提取行方向向量,写入 VML rotation 属性
+- **短文档强制页眉页脚**:移除 `n_pages < 5` 强制开启逻辑
+
+**🟠 中修复**
+- **CJK 字体西文强制 Times New Roman**:CJK 字体的西文部分保留原字体名
+- **文本框宽度估算粗糙**:buffer 从 ×1.4+4 降到 ×1.15+2(用实际 bbox 优先)
+- **密码未校验**:检查 is_encrypted + authenticate 返回值,加密 PDF 无密码报错
+- **下划线双重绘制**:检测到下划线后标记 Drawing.is_underline,不再作为形状绘制
+- **图片 SMask 透明丢失**:合成 alpha 到白底;同 xref 去重减小体积
+- **内部跳转链接 #pageN**:用 w:hyperlink w:anchor 生成可点击内部跳转
+
+**🟡 轻修复**
+- **垂直对齐死代码**:写入 VML v-text-anchor
+- **normalize_size 银行家舍入**:改用数学舍入(floor(x+0.5))
+- **性能:相邻同样式 span 合并**:`_merge_adjacent_spans` 减少文本框数量
+- **页眉页脚图片进 header/footer 部件**
+- **方正系列字体识别扩充**
+
+**📊 样本更新**
+- 对比图换成第 78/79/87/89/94 页(覆盖正文/表格/页眉页脚等多种版式)
+- `docs/samples/` 提供每页原始 PDF + 转换后 docx
 
 ### v1.2.0 (2025-10)
 
