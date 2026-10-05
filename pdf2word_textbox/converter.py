@@ -378,26 +378,26 @@ class Converter:
     def _add_text_span_as_textbox(self, paragraph, sp: TextSpan,
                                   pe: PageElements, z: int = 10,
                                   doc: Optional[Document] = None):
-        """把一个文本 span 作为文本框放置(精确坐标)。
-
-        修复:
-        - #3: 对齐根据 bbox 在页面中的水平位置推断(居中/右对齐)
-        - #7: CJK 字体的西文部分保留原字体名(不强制 Times New Roman)
-        - #8: 文本框宽度用实际 bbox 宽度 + 适度 buffer(不再粗暴 ×1.4)
-        - #10: 旋转文本通过 mso-rotate 写入 VML
-        """
+        """把一个文本 span 作为文本框放置(精确坐标)。"""
         from .fonts import get_font_roles_checked, has_cjk
         x0, y0, x1, y1 = sp.bbox
         actual_w = max(x1 - x0, 1.0)
         h = max(y1 - y0, sp.size, 1.0)
-        # #8 修复:宽度用实际 bbox + 小 buffer 防字体替换裁剪
-        est_w = self._estimate_text_width(sp.text, sp.size)
-        # 取实际宽度与估算的较大者,但 buffer 降到 1.15 + 2pt(原 1.4+4 过宽)
-        w = max(actual_w, est_w * 1.15) + 2.0
-        h = max(h, sp.size * 1.25)
-        # 字体:#7 修复——CJK 字体的西文部分保留原字体名
+        # 关键修复:用 fitz.get_text_length 精确测宽(而非粗估)
+        # 选内置字体:中文用 china-s,西文用 helv
+        font_for_measure = "china-s" if has_cjk(sp.text) else "helv"
+        try:
+            import fitz
+            precise_w = fitz.get_text_length(sp.text, fontname=font_for_measure, fontsize=sp.size)
+        except Exception:
+            precise_w = self._estimate_text_width(sp.text, sp.size)
+        # 文本框宽度:取实际bbox、精确测量、估算 三者最大值 + 充足buffer(1.3倍)
+        # 1.3倍 buffer 应对字体替换导致的宽度膨胀(LibreOffice无原字体时用替代字体)
+        w = max(actual_w, precise_w * 1.3, self._estimate_text_width(sp.text, sp.size) * 1.3) + 4.0
+        # 高度:允许 2 行(防止折行时被裁剪)
+        h = max(h, sp.size * 1.6)
+        # 字体:CJK 字体的西文部分保留原字体名
         font_latin, font_ea, ea_available = get_font_roles_checked(sp.font)
-        # 如果原字体是 CJK 字体但文本含西文,西文用原字体名(不强制 Times New Roman)
         if has_cjk(sp.font) and not has_cjk(sp.text):
             from .fonts import normalize_font
             font_latin = normalize_font(sp.font)
@@ -405,8 +405,10 @@ class Converter:
         hyperlink_rel_id = None
         if sp.hyperlink and doc is not None:
             hyperlink_rel_id = self._get_hyperlink_rel_id(doc, sp.hyperlink)
+        # 处理 \xa0:保留为非断空格(表单填空用),但确保不影响渲染
+        text = sp.text
         run = {
-            "text": sp.text,
+            "text": text,
             "font_latin": font_latin,
             "font_ea": font_ea,
             "size": sp.size,
@@ -416,12 +418,13 @@ class Converter:
             "underline": getattr(sp, "underline", False) or bool(sp.hyperlink),
             "hyperlink_rel_id": hyperlink_rel_id,
         }
-        # #3 修复:推断对齐——bbox 中心接近页面中心→居中,接近右边→右对齐
+        # 推断对齐
         align = self._infer_alignment(sp.bbox, pe.width)
+        # 关键修复:no_wrap=False(允许折行),避免"‹"裁剪符
         docx_builder.add_textbox(
             paragraph, x0, y0, w, h,
             runs=[run], align=align, line_spacing=1.0,
-            behind=False, z=z, vertical_align="top", no_wrap=True,
+            behind=False, z=z, vertical_align="top", no_wrap=False,
             rotation=getattr(sp, "rotation", 0.0),
         )
 
@@ -552,10 +555,17 @@ class Converter:
             )
         else:
             # 矩形/路径:用矩形包围盒复刻
+            # 关键修复:只对真正的矩形(type=='rect')应用填充。
+            # 曲线路径(type=='path', items 含 'c' 曲线)即使 fill!=None,
+            # 实际填充区域远小于 bbox,用 bbox 画填充矩形会产生错误的大黑块。
+            is_real_rect = dr.type == "rect"
+            # 检查 items 是否有 're'(矩形操作)
+            has_re_item = any(it[0] == "re" for it in dr.items if isinstance(it, tuple) and len(it) > 0)
+            apply_fill = (is_real_rect or has_re_item) and dr.fill_color is not None
             docx_builder.add_rect(
                 paragraph, x0, y0, max(w, 0.5), max(h, 0.5),
                 stroke_color=dr.stroke_color,
-                fill_color=dr.fill_color,
+                fill_color=dr.fill_color if apply_fill else None,
                 stroke_width=max(dr.width, 0.5),
                 behind=behind, z=z,
             )

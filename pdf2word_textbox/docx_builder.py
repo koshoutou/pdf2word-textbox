@@ -91,7 +91,7 @@ def add_textbox(
     fill_color: Optional[str] = None,
     border: bool = False,
     vertical_align: str = "top",
-    no_wrap: bool = True,
+    no_wrap: bool = False,
     rotation: float = 0.0,
 ):
     """添加绝对定位(页相对)的文本框。
@@ -106,22 +106,23 @@ def add_textbox(
         z: 层级(用于覆盖顺序)
         fill_color: 填充色 hex
         border: 是否显示边框
-        vertical_align: top/center/bottom(#5.2 修复:写入 v-text-anchor)
-        no_wrap: 是否禁止文本折行(单行渲染,保证 1:1 位置)
-        rotation: 旋转角度(度,顺时针;#5.1 修复:竖排/旋转文本)
+        vertical_align: top/center/bottom(写入 v-text-anchor)
+        no_wrap: 是否禁止折行(默认 False,允许折行避免"‹"裁剪符)
+        rotation: 旋转角度(度,顺时针)
     """
     _id = _next_id()
     z_index = z if not behind else -z
 
-    # 构建 txbxContent 的段落
+    # 构建段落属性
     jc = "" if align in ("left",) else f'<w:jc w:val="{align}"/>'
     line_val = int(240 * line_spacing)
-    nowrap_xml = '<w:wordWrap w:val="0"/>' if no_wrap else ''
+    # 关键修复:不再强制 wordWrap=0。
+    # 之前 wordWrap=0 + mso-wrap:none 导致 LibreOffice 文本溢出时显示"‹"裁剪符。
+    # 现在允许文本自然折行(若框不够宽),避免裁剪符。
     pPr = (f'<w:pPr>'
            f'<w:spacing w:line="{line_val}" w:lineRule="auto" '
            f'w:before="0" w:after="0" w:beforeLines="0" w:afterLines="0"/>'
            f'{jc}'
-           f'{nowrap_xml}'
            f'<w:ind w:left="0" w:right="0" w:firstLine="0"/>'
            f'</w:pPr>')
 
@@ -144,14 +145,12 @@ def add_textbox(
         rel_id = run.get("hyperlink_rel_id")
         if rel_id:
             if rel_id.startswith("__internal__:"):
-                # #5.7 内部跳转:用 w:anchor(书签)
                 anchor = rel_id[len("__internal__:"):]
                 runs_xml += (f'<w:hyperlink w:anchor="{anchor}" '
                             f'xmlns:w="{W_NS}">'
                             f'<w:r>{rPr}<w:t xml:space="preserve">{text}</w:t></w:r>'
                             f'</w:hyperlink>')
             else:
-                # 外部 URI
                 runs_xml += (f'<w:hyperlink r:id="{rel_id}" '
                             f'xmlns:r="{R_NS}">'
                             f'<w:r>{rPr}<w:t xml:space="preserve">{text}</w:t></w:r>'
@@ -166,13 +165,11 @@ def add_textbox(
     stroke_attr = "true" if border else "false"
     stroke_xml = f'<v:stroke on="true" color="#000000" weight="0.75pt"/>' if border else '<v:stroke on="false"/>'
 
-    # #5.2 修复:垂直对齐写入 v-text-anchor
     v_anchor = {"top": "top", "center": "middle", "bottom": "bottom"}.get(vertical_align, "top")
-    # #5.1 修复:旋转角度(VML rotation 属性,顺时针为负值)
     rot_attr = f' rotation="{-rotation:.2f}"' if abs(rotation) > 0.5 else ''
-    # 竖排文本(wmode=1)用 v-text-anchor + writing-mode
-    # VML 用 style 的 mso-text-orientation 但简单起见用 rotation=90 近似
 
+    # 关键修复:移除 mso-wrap:none,改为 mso-wrap:square(允许文本在框内折行)
+    # 保留 page-relative 定位,但不禁止折行
     style = (f"position:absolute;"
              f"left:{_pt(x)};top:{_pt(y)};"
              f"width:{_pt(w)};height:{_pt(h)};"
@@ -181,7 +178,7 @@ def add_textbox(
              f"mso-position-vertical:absolute;"
              f"mso-position-horizontal-relative:page;"
              f"mso-position-vertical-relative:page;"
-             f"mso-wrap-edited:f;mso-wrap:none;")
+             f"mso-wrap:square;")
 
     shape_xml = f'''<v:shape xmlns:v="{V_NS}" xmlns:o="{O_NS}" xmlns:w10="{W10_NS}" xmlns:w="{W_NS}" xmlns:r="{R_NS}"
  id="TextBox{_id}" type="#_x0000_t202"{rot_attr}
