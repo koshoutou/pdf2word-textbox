@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf2word-textbox"
+version = "1.0.0"
+description = "PDF 转 Word 工具 - 基于文本框一比一精准复刻(页眉页脚/矢量图形/表格/页码/字体格式)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "AGPL-3.0-or-later"}
+authors = [
+    {name = "koshoutou", email = "admin@inkcoo.com"},
+]
+keywords = ["pdf", "docx", "word", "pdf2docx", "text-box", "layout", "convert"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Office Suites",
+    "Topic :: Text Processing",
+    "Topic :: Text Processing :: Markup :: XML",
+]
+dependencies = [
+    "PyMuPDF>=1.23.16",
+    "python-docx>=1.0.0",
+    "lxml>=4.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov"]
+
+[project.urls]
+Homepage = "https://github.com/koshoutou/pdf2word-textbox"
+Repository = "https://github.com/koshoutou/pdf2word-textbox"
+Issues = "https://github.com/koshoutou/pdf2word-textbox/issues"
+
+[project.scripts]
+pdf2word-textbox = "pdf2word_textbox.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pdf2word_textbox*"]
+
+[tool.setuptools.package-data]
+pdf2word_textbox = ["*.txt", "*.md"]

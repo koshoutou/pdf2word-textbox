@@ -1,0 +1,50 @@
+# 临时文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 测试与覆盖率
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 输出与样例
+*.docx
+*.pdf
+!docs/**/*.pdf
+!examples/**/*.pdf
+output/
+test-output/
+
+# 敏感信息(绝不提交)
+.env
+*.key
+*.pem
+secrets/
+credentials/
