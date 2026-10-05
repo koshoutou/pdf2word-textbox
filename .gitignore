@@ -38,7 +38,9 @@ htmlcov/
 *.docx
 *.pdf
 !docs/**/*.pdf
+!docs/**/*.docx
 !examples/**/*.pdf
+!examples/**/*.docx
 output/
 test-output/
 
