@@ -193,27 +193,54 @@ class PDFExtractor:
 
     # ---------- 矢量图形 ----------
     def _extract_drawings(self, page, pe: PageElements):
-        """提取矢量绘图指令。"""
+        """提取矢量绘图指令。
+
+        关键修复:过滤掉文字字形(汉字矢量轮廓)。
+        PyMuPDF 会把 CID 字体的文字字形作为 drawing 提取(大量贝塞尔曲线,
+        fill=黑色,bbox 与文字 span 重合)。这些不是真正的矢量图形,
+        若作为 drawing 绘制会产生黑色矩形遮盖文字。
+        判断:items 含大量 'c' 曲线(>10)且 bbox 与某 span 重合 → 是字形,跳过。
+        """
         from .colors import to_hex_color, is_white
         try:
             drawings = page.get_drawings()
         except Exception:
             drawings = []
+        # 预收集文字 span bbox(用于过滤字形)
+        span_bboxes = [(sp.bbox, sp.text) for sp in pe.spans if sp.text.strip()]
+
         for dr in drawings:
             rect = dr.get("rect", None)
             if rect is None:
                 continue
             x0, y0, x1, y1 = rect
-            # 跳过 0 尺寸
             if x1 - x0 < 0.1 and y1 - y0 < 0.1:
                 continue
             stroke = dr.get("color", None)
             fill = dr.get("fill", None)
             width = dr.get("width", 0.0) or 0.0
             items = dr.get("items", [])
+            # 关键修复:过滤文字字形
+            # 字形特征:items 含大量 'c' 曲线(>10),fill=黑色,bbox 与文字重合
+            c_count = sum(1 for it in items if isinstance(it, tuple) and it[0] == "c")
+            if c_count > 10 and fill is not None:
+                # 检查是否与文字 span 重合
+                is_glyph = False
+                for sbbox, stext in span_bboxes:
+                    sx0, sy0, sx1, sy1 = sbbox
+                    # 重合:bbox 交集 > 50%
+                    ix0, iy0 = max(x0, sx0), max(y0, sy0)
+                    ix1, iy1 = min(x1, sx1), min(y1, sy1)
+                    if ix0 < ix1 and iy0 < iy1:
+                        overlap = (ix1 - ix0) * (iy1 - iy0)
+                        dr_area = (x1 - x0) * (y1 - y0)
+                        if dr_area > 0 and overlap / dr_area > 0.3:
+                            is_glyph = True
+                            break
+                if is_glyph:
+                    continue  # 跳过文字字形
             closed = False
             dtype = "path"
-            # 判断类型:纯直线 / 矩形 / 曲线
             if len(items) == 1 and items[0][0] == "l":
                 dtype = "line"
             elif len(items) == 5 and items[0][0] == "re":
@@ -223,7 +250,6 @@ class PDFExtractor:
                 dtype = "path"
                 if items[-1][0] == "l":
                     closed = True
-            # 跳过纯白色填充(页面背景)
             if fill is not None and is_white(fill) and (stroke is None):
                 continue
             pe.drawings.append(Drawing(

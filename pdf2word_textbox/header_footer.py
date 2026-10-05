@@ -37,6 +37,9 @@ class PageRegion:
     header_dividers: list[Divider] = field(default_factory=list)
     footer_dividers: list[Divider] = field(default_factory=list)
     is_page_number: dict = field(default_factory=dict)  # span_id -> bool
+    # 关键修复:记录是否真的有页眉页脚(避免无页眉时把正文标题误判为页眉)
+    has_header: bool = False
+    has_footer: bool = False
 
 
 @dataclass
@@ -199,6 +202,8 @@ def detect_header_footer(
             header_dividers=h_divs,
             footer_dividers=f_divs,
             is_page_number=is_pn,
+            has_header=has_header,
+            has_footer=has_footer,
         ))
 
     return cfg, regions
@@ -211,17 +216,14 @@ def classify_span(
 ) -> str:
     """判断 span 属于 header / footer / body。
 
-    Args:
-        span: 文本片段
-        region: 该页区域划分
-        pe: 该页元素
-
-    Returns:
-        'header' | 'footer' | 'body'
+    关键修复:只有 has_header/has_footer=True 时才判为 header/footer。
+    否则无页眉页脚的页面会把顶部正文标题误判为页眉,塞进 header 部件,
+    导致 WPS/LibreOffice 中定位偏差(header 部件坐标系与正文不同)。
     """
     cy = (span.bbox[1] + span.bbox[3]) / 2
-    if region.header_top > 0 and cy <= region.header_top:
+    # 只有确实检测到页眉,且 span 在页眉区域,才判为 header
+    if region.has_header and region.header_top > 0 and cy <= region.header_top:
         return "header"
-    if region.footer_top > 0 and cy >= region.footer_top:
+    if region.has_footer and region.footer_top > 0 and cy >= region.footer_top:
         return "footer"
     return "body"

@@ -386,6 +386,19 @@ pdf2word-textbox/
 
 ## 更新日志
 
+### v1.5.0 (2025-10)
+
+**🔴 WPS/Word 兼容性 + 定位精度大修**
+
+- **mc:AlternateContent 双方案**:每个文本框/形状用 DrawingML(Word/WPS 原生)+ VML(LO 回退)双方案包裹,WPS 中精确定位
+- **DrawingML 精确定位**:a:bodyPr lIns/tIns/rIns/bIns=0 消除内部 padding,anchor="t" 顶对齐
+- **页眉页脚误判修复**:无页眉页脚的页面不再把正文标题塞进 header 部件(避免坐标系偏差)
+- **文字字形过滤**:过滤 PyMuPDF 把 CID 字体字形当 drawing 提取(消除黑块)
+- **文本框左对齐**:文字一律左对齐(框 left=文字 x0),消除居中偏移
+- **y 偏移补偿**:文本框 top 上移 2pt 补偿字体 ascender
+- **定位精度**:x 偏移从 +4.4/+15.6 降至 +0.1,y 偏移从 +6.3 降至 ≈0
+
+
 ### v1.4.0 (2025-10)
 
 **🔴 关键质量修复(解决转换后文字重叠/乱码/黑块)**

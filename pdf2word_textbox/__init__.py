@@ -14,6 +14,6 @@
 
 from .converter import Converter
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 __all__ = ["Converter"]
 __author__ = "koshoutou (Inkcoo) <admin@inkcoo.com>"

@@ -418,11 +418,16 @@ class Converter:
             "underline": getattr(sp, "underline", False) or bool(sp.hyperlink),
             "hyperlink_rel_id": hyperlink_rel_id,
         }
-        # 推断对齐
-        align = self._infer_alignment(sp.bbox, pe.width)
+        # 文本框内文字一律左对齐:文本框 left 已是文字 x0,
+        # 居中/右对齐会导致文字相对框偏移(框宽度大于文字宽度时)。
+        # 原PDF的居中/右对齐通过文本框位置本身已体现(框left=文字x0)。
+        align = "left"
+        # y 补偿:字体 ascender 导致文字 baseline 相对框 top 下移约 2pt,
+        # 将文本框 top 上移 2pt 让文字实际位置对齐原PDF。
+        box_y = y0 - 2.0
         # 关键修复:no_wrap=False(允许折行),避免"‹"裁剪符
         docx_builder.add_textbox(
-            paragraph, x0, y0, w, h,
+            paragraph, x0, box_y, w, h,
             runs=[run], align=align, line_spacing=1.0,
             behind=False, z=z, vertical_align="top", no_wrap=False,
             rotation=getattr(sp, "rotation", 0.0),
